@@ -173,7 +173,7 @@
 </script>
 </head>
 <body class="easy">
-<!-- build: 2026-09-25b -->
+<!-- build: 2026-09-25c -->
 <div id="game"></div>
 <div id="touch"></div>
 <svg id="arrow"><defs><marker id="ah" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="context-stroke"/></marker></defs>
@@ -188,7 +188,7 @@
 <button id="brakeBtn" class="ctl">ブレーキ</button>
 <div id="hint">ゆびで シュッと なぞると すすむよ</div>
 <div id="banner"></div>
-<div id="ver">v2026-09-25b</div>
+<div id="ver">v2026-09-25c</div>
 
 <!-- 説明画面 -->
 <div id="help" class="overlay">
@@ -349,9 +349,9 @@ const STAGES = [
 
 // むずかしさごとのバランス設定
 const MODES = {
-  easy:   { K: 7.0, rest: 0,   damp: 2.5, imp: 0.55, grav0: 3.0, gravV: 0.25, torque: 10, drift: 0 },
-  normal: { K: 1.6, rest: 1.5, damp: 1.0, imp: 1.15, grav0: 3.0, gravV: 0.30, torque: 10, drift: 0.3 },
-  hard:   { K: 0.6, rest: 1.2, damp: 0.8, imp: 1.45, grav0: 3.4, gravV: 0.40, torque: 9,  drift: 0.7 },
+  easy:   { K: 7.0, rest: 0,   damp: 2.5, imp: 0.55, grav0: 3.0, gravV: 0.25, torque: 6, holdDamp: 2.0, drift: 0 },
+  normal: { K: 2.5, rest: 1.2, damp: 1.4, imp: 0.85, grav0: 3.0, gravV: 0.20, torque: 6, holdDamp: 2.5, drift: 0.15 },
+  hard:   { K: 1.5, rest: 1.2, damp: 1.1, imp: 1.1,  grav0: 3.2, gravV: 0.30, torque: 6, holdDamp: 2.0, drift: 0.35 },
 };
 
 /* =====================================================
@@ -882,8 +882,13 @@ function step(dt) {
   const grav = md.grav0 + speed * md.gravV;
   const K = md.K + (speed < 0.5 ? md.rest : 0);   // 止まっているときは立ちやすい
   const leanIn = (input.leanR ? 1 : 0) - (input.leanL ? 1 : 0) + input.keyLean + input.apiLean;
-  let acc = grav * Math.sin(P.lean) - K * P.lean - md.damp * P.leanV;
-  acc += Math.max(-1, Math.min(1, leanIn)) * md.torque;
+  const dir = Math.max(-1, Math.min(1, leanIn));
+  // ボタンを押している間は「ふんばり」でゆれがおさまる（おしすぎても反対へ倒れにくい）
+  const damp = md.damp + (dir !== 0 ? md.holdDamp : 0);
+  let acc = grav * Math.sin(P.lean) - K * P.lean - damp * P.leanV;
+  // まん中をこえて反対側へ行くほど、ボタンの力は弱まる
+  const over = Math.max(0, P.lean * dir);
+  acc += dir * md.torque * Math.max(0.2, 1 - over / 0.3);
   let wob = speed * md.drift;
   if (braking && speed > 0.5) wob += speed * 2.2;
   if (zt === 'water' && speed > 0.3) wob += 2.5 * Math.min(speed, 3) / 3;
@@ -1062,7 +1067,7 @@ function updateKeys() {
 /* =====================================================
    見た目の更新
    ===================================================== */
-const vis = { lean: 0, heading: Math.PI, spd: 0 };
+const vis = { lean: 0, heading: Math.PI, spd: 0, lift: 0 };
 const camTarget = new THREE.Vector3(), lookTarget = new THREE.Vector3(), lookNow = new THREE.Vector3(0, 0.8, -4);
 let hudTick = 0;
 
@@ -1080,16 +1085,27 @@ function updatePose(dt, speed) {
     const s = hip.userData.s;
     let rx = (i === 0 ? -stance : stance);
     if (i === P.kickLeg) rx += P.kickAnim * 0.85;
-    if (P.fallen) rx = (i === 0 ? -0.4 : 0.5);
+    if (P.fallen) rx = 0;
     hip.rotation.x = rx;
-    hip.rotation.z = s * spread;
+    hip.rotation.z = s * (P.fallen ? 0.04 : spread);
     if (i !== P.kickLeg) hipY = 0.8 * Math.cos(rx) * Math.cos(spread);
   });
   // こしを落とす（ひざを曲げた かんじ）
-  const crouch = 0.06 * s01 + 0.05 * P.kickAnim;
+  const crouch = P.fallen ? 0 : 0.06 * s01 + 0.05 * P.kickAnim;
   hipY -= crouch;
   chr.legs.forEach(h => { h.position.y = hipY; });
   chr.upper.position.y = hipY;
+
+  if (P.fallen) {
+    // ころんだ姿勢：からだを まっすぐにして、うでは前へ（床にめりこまない形）
+    chr.upper.rotation.x = 0; chr.upper.rotation.z = 0;
+    for (const a of chr.arms) {
+      const s = a.userData.s;
+      a.position.x = s * 0.2; a.rotation.z = 0; a.rotation.x = -1.3 + Math.sin(t * 9 + s) * 0.15;
+    }
+    return;
+  }
+  for (const a of chr.arms) a.position.x = a.userData.s * 0.3;
 
   // 上半身：前のめり＋ゆらゆら
   const idleSway = Math.sin(t * 2.3) * 0.05 + Math.sin(t * 3.7) * 0.025;
@@ -1148,10 +1164,15 @@ function updateVisuals(dt) {
   if (P.fallen) {
     let a = Math.min(1, P.fallT / 0.35);
     if (P.fallT > 1.3) a = Math.max(0, (1.6 - P.fallT) / 0.3);
-    target = -P.fallDir * a * 1.45;
+    target = -P.fallDir * a * 1.5;
   } else target = -P.lean;
   vis.lean += (target - vis.lean) * Math.min(1, dt * 14);
   chr.pivot.rotation.z = vis.lean;
+  // 横だおしになるほど体を持ち上げて、床にめりこまないようにする
+  const lift = P.fallen ? Math.sin(Math.min(1.57, Math.abs(vis.lean))) * 0.25 : 0;
+  vis.lift += (lift - vis.lift) * Math.min(1, dt * 14);
+  chr.root.position.y = vis.lift;
+  chr.shadow.position.y = 0.012 - vis.lift;
 
   updatePose(dt, speed);
 
@@ -1241,6 +1262,8 @@ G.api = {
   setPlayer(o) { Object.assign(P, o); },
   setMode, pause: showHelp, resume: hideHelp,
   zoneAt: (x, z) => zoneAt(x, z),
+  // 描画せずに物理だけ進める（検証用）。onTick(G) を毎ステップ呼ぶ
+  stepFor(sec, onTick) { const dt = 1 / 60; for (let i = 0; i < sec * 60 && G.state === 'playing'; i++) { if (onTick) onTick(G); G.elapsed += dt; G.stageTime += dt; step(dt); } return G.api.snapshot(); },
   snapshot() { return { state: G.state, mode: G.mode, stage: G.stageIndex, x: P.x, z: P.z, vx: P.vx, vz: P.vz, lean: P.lean, fallen: P.fallen, falls: G.falls, zone: P.zone, frames: G.frames }; },
 };
 
